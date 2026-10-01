@@ -96,6 +96,10 @@ jobs:
 
       - name: Build signed release APK
         working-directory: aurix-release/android
+        env:
+          AURIX_KEYSTORE_PASSWORD: ${{ secrets.AURIX_KEYSTORE_PASSWORD }}
+          AURIX_KEY_ALIAS: ${{ secrets.AURIX_KEY_ALIAS }}
+          AURIX_KEY_PASSWORD: ${{ secrets.AURIX_KEY_PASSWORD }}
         run: |
           gradle --no-daemon clean assembleRelease
 
