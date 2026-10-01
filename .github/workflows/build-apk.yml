@@ -2,13 +2,19 @@ name: Build AURIX APK
 
 on:
   workflow_dispatch:
+
   push:
     paths:
       - "AURIX-Android-Release-v1-SDK-GRADLE.zip"
       - ".github/workflows/build-apk.yml"
 
+permissions:
+  contents: read
+
 jobs:
+
   build:
+
     runs-on: ubuntu-latest
 
     steps:
@@ -17,30 +23,58 @@ jobs:
       # 1. CHECKOUT
       # ============================================================
 
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
 
       # ============================================================
-      # 2. ROZPAKOWANIE WEB + ANDROID
+      # 2. CHECK ZIP
+      # ============================================================
+
+      - name: Check Android SDK archive
+        shell: bash
+        run: |
+          set -e
+
+          test -f "AURIX-Android-Release-v1-SDK-GRADLE.zip"
+
+          echo "AURIX Android archive found:"
+          ls -lh "AURIX-Android-Release-v1-SDK-GRADLE.zip"
+
+
+      # ============================================================
+      # 3. UNPACK
       # ============================================================
 
       - name: Unpack AURIX Android project
+        shell: bash
         run: |
-          unzip -q AURIX-Android-Release-v1-SDK-GRADLE.zip
+          set -e
 
-          test -f aurix-release/android/settings.gradle
-          test -f aurix-release/android/app/build.gradle
+          rm -rf aurix-release
 
-          test -f aurix-release/www/index.html
-          test -f aurix-release/www/app.js
-          test -f aurix-release/www/styles.css
-          test -f aurix-release/www/native-bridge.js
-          test -f aurix-release/www/logo-512.png
+          unzip -q "AURIX-Android-Release-v1-SDK-GRADLE.zip"
+
+          echo "Checking project..."
+
+          test -d "aurix-release"
+          test -d "aurix-release/android"
+          test -d "aurix-release/www"
+
+          test -f "aurix-release/android/settings.gradle"
+          test -f "aurix-release/android/app/build.gradle"
+
+          test -f "aurix-release/www/index.html"
+          test -f "aurix-release/www/app.js"
+          test -f "aurix-release/www/styles.css"
+          test -f "aurix-release/www/native-bridge.js"
+          test -f "aurix-release/www/logo-512.png"
+
+          echo "AURIX project structure: OK"
 
 
       # ============================================================
-      # 3. JAVA 21
+      # 4. JAVA 21
       # ============================================================
 
       - name: Set up JDK 21
@@ -48,299 +82,413 @@ jobs:
         with:
           distribution: temurin
           java-version: "21"
+          cache: gradle
 
 
       # ============================================================
-      # 4. KLUCZ PODPISUJĄCY APK
+      # 5. ANDROID SDK
+      # ============================================================
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android SDK 36
+        shell: bash
+        run: |
+          set -e
+
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+          echo "Android SDK: OK"
+
+
+      # ============================================================
+      # 6. RESTORE SIGNING KEY
       # ============================================================
 
       - name: Restore signing keystore
+        shell: bash
         env:
           AURIX_KEYSTORE_BASE64: ${{ secrets.AURIX_KEYSTORE_BASE64 }}
         run: |
-          echo "$AURIX_KEYSTORE_BASE64" | base64 --decode > aurix-release/android/aurix-release.jks
+          set -e
+
+          test -n "$AURIX_KEYSTORE_BASE64"
+
+          echo "$AURIX_KEYSTORE_BASE64" \
+            | base64 --decode \
+            > aurix-release/android/aurix-release.jks
 
           test -s aurix-release/android/aurix-release.jks
 
+          echo "Signing keystore: OK"
+
 
       # ============================================================
-      # 5. NAPRAWA WEBVIEW + WEB APP
+      # 7. PATCH WEB + ANDROID
       # ============================================================
 
       - name: Patch AURIX Android runtime
         working-directory: aurix-release
+        shell: bash
         run: |
 
-          python3 - <<'PY'
+          set -e
+
+          python3 <<'PY'
+
           from pathlib import Path
           import re
+          import textwrap
+
 
           root = Path(".")
 
 
           # ========================================================
           # INDEX.HTML
-          #
-          # app.js nie może być blokowany przez Leaflet CDN.
           # ========================================================
 
           p = root / "www/index.html"
-          s = p.read_text()
 
-          leaflet_old = (
-              '<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" '
-              'crossorigin=""></script>'
+          s = p.read_text(encoding="utf-8")
+
+
+          # --------------------------------------------------------
+          # Usuń stare AURIX scripts
+          # --------------------------------------------------------
+
+          s = re.sub(
+              r'<script[^>]+src=["\']native-bridge\.js["\'][^>]*></script>',
+              '',
+              s,
+              flags=re.I
           )
 
-          native_scripts = (
-              '<script src="native-bridge.js"></script>'
-              '<script src="app.js"></script>'
+          s = re.sub(
+              r'<script[^>]+src=["\']app\.js["\'][^>]*></script>',
+              '',
+              s,
+              flags=re.I
           )
 
-          leaflet_async = (
-              '<script async '
-              'src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" '
-              'crossorigin="" '
-              'onload="window.dispatchEvent(new Event(\\'aurix:leaflet-ready\\'))" '
-              'onerror="console.warn(\\'[AURIX] Leaflet CDN unavailable\\')">'
-              '</script>'
+
+          # --------------------------------------------------------
+          # Usuń stare Leaflet
+          # --------------------------------------------------------
+
+          s = re.sub(
+              r'<script[^>]+src=["\']https://unpkg\.com/leaflet@1\.9\.4/dist/leaflet\.js["\'][^>]*></script>',
+              '',
+              s,
+              flags=re.I
           )
 
-          leaflet_ready = (
-              '<script>'
-              'window.addEventListener("aurix:leaflet-ready",function(){'
-              'try{'
-              'if(typeof window.initMap==="function"){window.initMap();}'
-              '}catch(e){'
-              'console.error("[AURIX MAP]",e);'
-              '}'
-              '});'
-              '</script>'
-          )
 
-          # Usuń istniejące skrypty AURIX.
-          s = s.replace(native_scripts, "", 1)
+          # --------------------------------------------------------
+          # Runtime scripts
+          # --------------------------------------------------------
 
-          # Zamień blok Leaflet na:
-          # native bridge -> app.js -> async Leaflet -> callback.
-          if leaflet_old in s:
-              s = s.replace(
-                  leaflet_old,
-                  native_scripts + leaflet_async + leaflet_ready,
-                  1
-              )
-          else:
-              # Jeśli wcześniejsza wersja już zmieniła Leaflet,
-              # dopilnuj tylko obecności skryptów AURIX.
-              if 'src="app.js"' not in s:
-                  s = s.replace(
-                      "</body>",
-                      native_scripts + leaflet_async + leaflet_ready + "</body>",
-                      1
-                  )
+          runtime_scripts = """
+          <script src="native-bridge.js"></script>
+          <script src="app.js"></script>
 
-          if "aurix:leaflet-ready" not in s:
+          <script
+              src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+              crossorigin="">
+          </script>
+
+          <script>
+          window.addEventListener("load", function () {
+              try {
+                  if (typeof window.initMap === "function") {
+                      window.initMap();
+                  }
+              } catch (e) {
+                  console.error("[AURIX MAP]", e);
+              }
+          });
+          </script>
+          """
+
+
+          # --------------------------------------------------------
+          # Wstaw przed </body>
+          # --------------------------------------------------------
+
+          if re.search(r'</body>', s, flags=re.I) is None:
               raise SystemExit(
-                  "ERROR: Leaflet runtime patch was not applied"
+                  "ERROR: index.html does not contain </body>"
               )
+
+
+          s = re.sub(
+              r'</body>',
+              runtime_scripts + "\n</body>",
+              s,
+              count=1,
+              flags=re.I
+          )
+
+
+          # --------------------------------------------------------
+          # Kontrola
+          # --------------------------------------------------------
 
           if 'src="app.js"' not in s:
               raise SystemExit(
-                  "ERROR: app.js is missing from index.html"
+                  "ERROR: app.js missing from index.html"
               )
 
-          p.write_text(s)
+          if 'src="native-bridge.js"' not in s:
+              raise SystemExit(
+                  "ERROR: native-bridge.js missing from index.html"
+              )
+
+
+          p.write_text(
+              s,
+              encoding="utf-8"
+          )
 
 
           # ========================================================
           # APP.JS
-          #
-          # Map musi być odporna na brak Leaflet w pierwszej chwili.
           # ========================================================
 
           p = root / "www/app.js"
-          s = p.read_text()
 
-          old_map = (
-              "function initMap(){"
-              "state.map=L.map('mapCanvas',{zoomControl:true,"
-              "attributionControl:true}).setView([52.1,19.4],6);"
-          )
+          s = p.read_text(encoding="utf-8")
 
-          new_map = (
-              "function initMap(){"
-              "if(state.map||!window.L)return;"
-              "state.map=L.map('mapCanvas',{zoomControl:true,"
-              "attributionControl:true}).setView([52.1,19.4],6);"
-          )
 
-          if old_map in s:
-              s = s.replace(old_map, new_map, 1)
+          # --------------------------------------------------------
+          # Bezpieczny initMap
+          # --------------------------------------------------------
 
-          elif new_map not in s:
+          if "function initMap()" not in s:
+
               raise SystemExit(
-                  "ERROR: initMap() pattern not found"
+                  "ERROR: initMap() not found in app.js"
               )
 
 
-          # ========================================================
-          # SERVICE WORKER
-          #
-          # W APK nie może podawać starego JS/CSS.
-          # ========================================================
+          if "__AURIX_MAP_INITIALIZED__" not in s:
 
-          lines = s.splitlines()
+              s = re.sub(
+                  r'function\s+initMap\s*\(\)\s*\{',
 
-          service_worker_found = False
+                  """function initMap(){
 
-          for i, line in enumerate(lines):
+              if (window.__AURIX_MAP_INITIALIZED__) {
+                  return;
+              }
 
-              if (
-                  "navigator.serviceWorker.register" in line
-                  and "sw.js" in line
-              ):
-                  lines[i] = (
-                      "// Android build: Service Worker disabled."
-                  )
-                  service_worker_found = True
+              if (!window.L) {
+                  console.warn("[AURIX] Leaflet is not ready");
+                  return;
+              }
 
-          if not service_worker_found:
-              raise SystemExit(
-                  "ERROR: Service Worker registration not found"
+              window.__AURIX_MAP_INITIALIZED__ = true;
+
+                  """,
+
+                  s,
+
+                  count=1
               )
 
-          p.write_text("\n".join(lines) + "\n")
+
+          # --------------------------------------------------------
+          # Service Worker
+          # --------------------------------------------------------
+
+          s = re.sub(
+              r'navigator\.serviceWorker\.register\s*\([^;]+;?',
+              '// Android build: Service Worker disabled.',
+              s,
+              flags=re.S
+          )
+
+
+          p.write_text(
+              s,
+              encoding="utf-8"
+          )
 
 
           # ========================================================
           # CSS
-          #
-          # Responsywność telefonu.
           # ========================================================
 
           p = root / "www/styles.css"
-          s = p.read_text()
+
+          s = p.read_text(encoding="utf-8")
+
 
           marker = "/* AURIX Android responsive hardening */"
 
+
           if marker not in s:
 
-              s += r'''
-/* AURIX Android responsive hardening */
+              css = r"""
+          /* AURIX Android responsive hardening */
 
-html,
-body,
-#app {
-  width: 100%;
-  max-width: 100vw;
-  overflow-x: hidden;
-}
+          html,
+          body,
+          #app {
+            width: 100%;
+            max-width: 100vw;
+            min-width: 0;
+            overflow-x: hidden;
+          }
 
-.screen {
-  width: 100%;
-  min-width: 0;
-}
+          *,
+          *::before,
+          *::after {
+            box-sizing: border-box;
+          }
 
-.bottom-nav {
-  width: 100%;
-  max-width: 100vw;
-  box-sizing: border-box;
-}
+          img,
+          video,
+          canvas,
+          svg {
+            max-width: 100%;
+          }
 
-.bottom-nav button {
-  min-width: 0;
-  overflow: hidden;
-  touch-action: manipulation;
-  -webkit-tap-highlight-color: transparent;
-}
+          .screen {
+            width: 100%;
+            max-width: 100vw;
+            min-width: 0;
+          }
 
-.bottom-nav button span {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+          .bottom-nav {
+            width: 100%;
+            max-width: 100vw;
+            box-sizing: border-box;
+            overflow: hidden;
+          }
 
-@media (max-width: 430px) {
+          .bottom-nav button {
+            min-width: 0;
+            max-width: 100%;
+            overflow: hidden;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+          }
 
-  .topbar {
-    padding-left: max(10px, env(safe-area-inset-left));
-    padding-right: max(10px, env(safe-area-inset-right));
-  }
+          .bottom-nav button span {
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
 
-  .screen {
-    padding-left: 10px;
-    padding-right: 10px;
-  }
+          input,
+          button,
+          select,
+          textarea {
+            max-width: 100%;
+          }
 
-  .hero-card {
-    padding: 16px;
-  }
+          button,
+          a {
+            touch-action: manipulation;
+          }
 
-  .hero-card h1 {
-    font-size: 25px;
-  }
+          @media (max-width: 430px) {
 
-  .hero-card p {
-    font-size: 14px;
-  }
+            .topbar {
+              padding-left: max(10px, env(safe-area-inset-left));
+              padding-right: max(10px, env(safe-area-inset-right));
+            }
 
-  .drive-btn {
-    padding: 16px;
-  }
+            .screen {
+              padding-left: 10px;
+              padding-right: 10px;
+            }
 
-  .bottom-nav {
-    height: 64px;
-    padding-bottom: max(env(safe-area-inset-bottom), 4px);
-  }
+            .hero-card {
+              padding: 16px;
+            }
 
-  .bottom-nav button {
-    height: 60px;
-  }
+            .hero-card h1 {
+              font-size: 25px;
+            }
 
-  .bottom-nav button span:first-child {
-    font-size: 18px;
-    line-height: 18px;
-  }
+            .hero-card p {
+              font-size: 14px;
+            }
 
-  .bottom-nav button span:last-child {
-    font-size: 8px;
-    line-height: 10px;
-  }
-}
+            .drive-btn {
+              padding: 16px;
+            }
 
-@media (max-width: 360px) {
+            .bottom-nav {
+              min-height: 64px;
+              padding-bottom: max(
+                env(safe-area-inset-bottom),
+                4px
+              );
+            }
 
-  .hero-card h1 {
-    font-size: 22px;
-  }
+            .bottom-nav button {
+              height: 60px;
+            }
 
-  .hero-orb {
-    font-size: 64px;
-  }
+            .bottom-nav button span:first-child {
+              font-size: 18px;
+              line-height: 18px;
+            }
 
-  .stat-grid {
-    gap: 6px;
-  }
+            .bottom-nav button span:last-child {
+              font-size: 8px;
+              line-height: 10px;
+            }
+          }
 
-  .stat-card {
-    padding: 9px;
-  }
+          @media (max-width: 360px) {
 
-  .stat-card b {
-    font-size: 20px;
-  }
+            .hero-card h1 {
+              font-size: 22px;
+            }
 
-  .bottom-nav button span:first-child {
-    font-size: 16px;
-  }
+            .hero-orb {
+              font-size: 64px;
+            }
 
-  .bottom-nav button span:last-child {
-    font-size: 7px;
-  }
-}
-'''
+            .stat-grid {
+              gap: 6px;
+            }
 
-          p.write_text(s)
+            .stat-card {
+              padding: 9px;
+            }
+
+            .stat-card b {
+              font-size: 20px;
+            }
+
+            .bottom-nav button span:first-child {
+              font-size: 16px;
+            }
+
+            .bottom-nav button span:last-child {
+              font-size: 7px;
+            }
+          }
+          """
+
+              s += "\n" + textwrap.dedent(css) + "\n"
+
+
+          p.write_text(
+              s,
+              encoding="utf-8"
+          )
 
 
           # ========================================================
@@ -352,22 +500,37 @@ body,
               "MainActivity.java"
           )
 
-          s = p.read_text()
+
+          if not p.exists():
+
+              raise SystemExit(
+                  "ERROR: MainActivity.java not found"
+              )
 
 
-          # Importy WebView.
+          s = p.read_text(encoding="utf-8")
+
+
+          # --------------------------------------------------------
+          # Importy
+          # --------------------------------------------------------
+
           if "import android.webkit.WebViewClient;" not in s:
 
               s = s.replace(
                   "import android.webkit.WebView;",
-                  "import android.webkit.WebView;\n"
-                  "import android.webkit.WebViewClient;\n"
-                  "import android.webkit.WebChromeClient;\n"
-                  "import android.util.Log;"
+
+                  """import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.webkit.WebChromeClient;
+          import android.util.Log;"""
               )
 
 
-          # BridgeActivity ma public lifecycle methods.
+          # --------------------------------------------------------
+          # Lifecycle
+          # --------------------------------------------------------
+
           s = s.replace(
               "protected void onResume()",
               "public void onResume()"
@@ -379,75 +542,94 @@ body,
           )
 
 
-          # WebView.
-          pattern = re.compile(
-              r'        WebView webView = '
-              r'getBridge\(\)\.getWebView\(\);\n'
-              r'        webView\.getSettings\(\)'
-              r'\.setJavaScriptEnabled\(true\);\n'
-              r'        webView\.addJavascriptInterface\('
-              r'new NativeBridge\(this\), "AURIXNative"\);'
-          )
+          # --------------------------------------------------------
+          # WebView
+          # --------------------------------------------------------
 
-          replacement = '''        WebView webView = getBridge().getWebView();
+          if "setDomStorageEnabled(true)" not in s:
+
+              pattern = re.compile(
+                  r'WebView\s+webView\s*=\s*'
+                  r'getBridge\(\)\.getWebView\(\)\s*;'
+                  r'.*?'
+                  r'webView\.addJavascriptInterface\('
+                  r'\s*new NativeBridge\(this\)\s*,'
+                  r'\s*"AURIXNative"\s*\)\s*;',
+                  re.S
+              )
+
+
+              replacement = """
+
+          WebView webView = getBridge().getWebView();
+
           webView.getSettings().setJavaScriptEnabled(true);
+
           webView.getSettings().setDomStorageEnabled(true);
+
           webView.getSettings().setGeolocationEnabled(true);
-          webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
 
-          webView.setWebViewClient(new WebViewClient());
+          webView.getSettings()
+              .setMediaPlaybackRequiresUserGesture(false);
 
-          webView.setWebChromeClient(new WebChromeClient() {
-              @Override
-              public boolean onConsoleMessage(
-                      android.webkit.ConsoleMessage message) {
 
-                  Log.d(
-                      "AURIX_WEB",
-                      message.message()
-                      + " @"
-                      + message.lineNumber()
-                      + " "
-                      + message.sourceId()
-                  );
+          webView.setWebViewClient(
+              new WebViewClient()
+          );
 
-                  return true;
+
+          webView.setWebChromeClient(
+              new WebChromeClient() {
+
+                  @Override
+                  public boolean onConsoleMessage(
+                          android.webkit.ConsoleMessage message) {
+
+                      Log.d(
+                          "AURIX_WEB",
+                          message.message()
+                          + " @"
+                          + message.lineNumber()
+                          + " "
+                          + message.sourceId()
+                      );
+
+                      return true;
+                  }
               }
-          });
+          );
+
 
           webView.addJavascriptInterface(
               new NativeBridge(this),
               "AURIXNative"
           );
 
-          // NativeBridge jest dodawany po inicjalizacji Capacitor.
-          // Jednorazowy reload powoduje ponowne uruchomienie web app
-          // już z dostępnym AURIXNative.
-          webView.postDelayed(() -> {
-              try {
-                  webView.clearCache(true);
-                  webView.reload();
-              } catch (Exception e) {
-                  Log.e("AURIX_WEB", "reload failed", e);
-              }
-          }, 350);'''
+              """
 
-          s, count = pattern.subn(
-              replacement,
-              s,
-              count=1
-          )
 
-          if count != 1 and "setDomStorageEnabled(true)" not in s:
-              raise SystemExit(
-                  "ERROR: MainActivity WebView block not found"
+              s, count = pattern.subn(
+                  textwrap.dedent(replacement).strip(),
+                  s,
+                  count=1
               )
 
-          p.write_text(s)
+
+              if count != 1:
+
+                  raise SystemExit(
+                      "ERROR: MainActivity WebView block not found"
+                  )
+
+
+          p.write_text(
+              s,
+              encoding="utf-8"
+          )
 
 
           # ========================================================
-          # IKONA AURIX
+          # ICON
           # ========================================================
 
           icon_dir = root / (
@@ -459,204 +641,389 @@ body,
               exist_ok=True
           )
 
+
           source_icon = root / "www/logo-512.png"
+
           target_icon = icon_dir / "aurix_icon.png"
+
+
+          if not source_icon.exists():
+
+              raise SystemExit(
+                  "ERROR: www/logo-512.png not found"
+              )
+
 
           target_icon.write_bytes(
               source_icon.read_bytes()
           )
 
 
-          # AndroidManifest
-          p = root / "android/app/src/main/AndroidManifest.xml"
-          s = p.read_text()
+          # ========================================================
+          # MANIFEST
+          # ========================================================
+
+          p = root / (
+              "android/app/src/main/AndroidManifest.xml"
+          )
+
+
+          if not p.exists():
+
+              raise SystemExit(
+                  "ERROR: AndroidManifest.xml not found"
+              )
+
+
+          s = p.read_text(encoding="utf-8")
+
 
           if 'android:icon="@drawable/aurix_icon"' not in s:
 
               s = s.replace(
                   'android:label="@string/app_name"',
-                  'android:label="@string/app_name"\n'
-                  '        android:icon="@drawable/aurix_icon"\n'
-                  '        android:roundIcon="@drawable/aurix_icon"',
+
+                  """android:label="@string/app_name"
+                  android:icon="@drawable/aurix_icon"
+                  android:roundIcon="@drawable/aurix_icon" """,
+
                   1
               )
 
-          p.write_text(s)
+
+          p.write_text(
+              s,
+              encoding="utf-8"
+          )
 
 
           # ========================================================
-          # KONTROLA
+          # FINAL VALIDATION
           # ========================================================
 
-          assert (root / "www/app.js").exists()
-          assert (root / "www/index.html").exists()
-          assert (root / "www/styles.css").exists()
-          assert target_icon.exists()
+          required = [
 
-          print("AURIX Android runtime patch: OK")
+              "www/index.html",
+              "www/app.js",
+              "www/styles.css",
+              "www/native-bridge.js",
+              "www/logo-512.png",
+
+              "android/settings.gradle",
+              "android/app/build.gradle",
+
+              "android/app/src/main/AndroidManifest.xml",
+
+          ]
+
+
+          for item in required:
+
+              if not (root / item).exists():
+
+                  raise SystemExit(
+                      f"ERROR: missing required file: {item}"
+                  )
+
+
+          print("")
+          print("========================================")
+          print(" AURIX Android runtime patch: OK")
+          print("========================================")
+          print("")
+
           PY
 
 
       # ============================================================
-      # 6. CAPACITOR
+      # 8. CHECK GRADLE WRAPPER
       # ============================================================
 
-      - name: Fix Capacitor dependency
+      - name: Check Gradle wrapper
         working-directory: aurix-release/android
+        shell: bash
         run: |
-          sed -i \
-            's/com\.getcapacitor:capacitor-android:8\.5\.2/com.capacitorjs:core:8.5.2/g' \
-            app/build.gradle
+          set -e
+
+          test -f gradlew
+          test -f gradle/wrapper/gradle-wrapper.properties
+
+          chmod +x gradlew
+
+          ./gradlew --version
+
+          echo "Gradle wrapper: OK"
 
 
       # ============================================================
-      # 7. PODPISYWANIE
+      # 9. CONFIGURE SIGNING
       # ============================================================
 
-      - name: Configure signing
+      - name: Configure release signing
         working-directory: aurix-release/android
+        shell: bash
         env:
           AURIX_KEYSTORE_PASSWORD: ${{ secrets.AURIX_KEYSTORE_PASSWORD }}
           AURIX_KEY_ALIAS: ${{ secrets.AURIX_KEY_ALIAS }}
           AURIX_KEY_PASSWORD: ${{ secrets.AURIX_KEY_PASSWORD }}
         run: |
 
-          python3 - <<'PY'
+          set -e
+
+          python3 <<'PY'
+
           from pathlib import Path
 
+
           p = Path("app/build.gradle")
-          s = p.read_text()
+
+          s = p.read_text(
+              encoding="utf-8"
+          )
+
+
+          # --------------------------------------------------------
+          # signingConfigs
+          # --------------------------------------------------------
 
           if "signingConfigs {" not in s:
 
-              signing = '''
+              signing_block = """
+
               signingConfigs {
+
                   release {
-                      storeFile file("../aurix-release.jks")
-                      storePassword System.getenv("AURIX_KEYSTORE_PASSWORD")
-                      keyAlias System.getenv("AURIX_KEY_ALIAS")
-                      keyPassword System.getenv("AURIX_KEY_PASSWORD")
+
+                      storeFile file(
+                          "../aurix-release.jks"
+                      )
+
+                      storePassword System.getenv(
+                          "AURIX_KEYSTORE_PASSWORD"
+                      )
+
+                      keyAlias System.getenv(
+                          "AURIX_KEY_ALIAS"
+                      )
+
+                      keyPassword System.getenv(
+                          "AURIX_KEY_PASSWORD"
+                      )
                   }
               }
-              '''
+
+              """
+
+              if "buildTypes {" not in s:
+
+                  raise SystemExit(
+                      "ERROR: buildTypes block not found"
+                  )
 
               s = s.replace(
-                  "    buildTypes {",
-                  signing + "\n    buildTypes {",
+                  "buildTypes {",
+                  signing_block + "\nbuildTypes {",
                   1
               )
+
+
+          # --------------------------------------------------------
+          # release signing
+          # --------------------------------------------------------
 
           if "signingConfig signingConfigs.release" not in s:
 
-              s = s.replace(
-                  "        release {\n"
-                  "            minifyEnabled false",
-                  "        release {\n"
-                  "            signingConfig signingConfigs.release\n"
-                  "            minifyEnabled false",
-                  1
+              release_marker = "release {"
+
+
+              pos = s.find(
+                  release_marker
               )
 
-          p.write_text(s)
+
+              if pos == -1:
+
+                  raise SystemExit(
+                      "ERROR: release buildType not found"
+                  )
+
+
+              insert_pos = (
+                  pos
+                  + len(release_marker)
+              )
+
+
+              s = (
+                  s[:insert_pos]
+                  + """
+                      signingConfig signingConfigs.release
+                  """
+                  + s[insert_pos:]
+              )
+
+
+          p.write_text(
+              s,
+              encoding="utf-8"
+          )
+
+
+          print(
+              "Release signing configuration: OK"
+          )
+
           PY
 
 
       # ============================================================
-      # 8. ANDROID SDK 36
-      # ============================================================
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
-
-
-      # ============================================================
-      # 9. GRADLE
-      # ============================================================
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v6
-        with:
-          gradle-version: "8.14.3"
-
-
-      # ============================================================
-      # 10. BUILD APK
+      # 10. BUILD
       # ============================================================
 
       - name: Build signed release APK
         working-directory: aurix-release/android
+        shell: bash
         env:
           AURIX_KEYSTORE_PASSWORD: ${{ secrets.AURIX_KEYSTORE_PASSWORD }}
           AURIX_KEY_ALIAS: ${{ secrets.AURIX_KEY_ALIAS }}
           AURIX_KEY_PASSWORD: ${{ secrets.AURIX_KEY_PASSWORD }}
         run: |
-          gradle --no-daemon clean assembleRelease
+
+          set -e
+
+          chmod +x gradlew
+
+          ./gradlew \
+            --no-daemon \
+            --stacktrace \
+            clean \
+            assembleRelease
 
 
       # ============================================================
-      # 11. WERYFIKACJA PODPISU
+      # 11. FIND APK
+      # ============================================================
+
+      - name: Locate APK
+        working-directory: aurix-release/android
+        shell: bash
+        run: |
+
+          set -e
+
+          find \
+            app/build/outputs/apk/release \
+            -type f \
+            -name "*.apk" \
+            -print
+
+
+      # ============================================================
+      # 12. VERIFY APK SIGNATURE
       # ============================================================
 
       - name: Verify APK signature
         working-directory: aurix-release/android
-        run: |
-          $ANDROID_HOME/build-tools/36.0.0/apksigner verify \
-            --verbose \
-            app/build/outputs/apk/release/*.apk
-
-
-      # ============================================================
-      # 12. SPRAWDZENIE WEB APP W APK
-      # ============================================================
-
-      - name: Verify AURIX web assets are inside APK
-        working-directory: aurix-release/android
+        shell: bash
         run: |
 
-          APK=$(find \
-            app/build/outputs/apk/release \
-            -type f \
-            -name "*.apk" \
-            | head -n 1)
+          set -e
+
+          APK=$(
+            find \
+              app/build/outputs/apk/release \
+              -type f \
+              -name "*.apk" \
+              | head -n 1
+          )
 
           test -n "$APK"
 
-          unzip -l "$APK" | grep -q "assets/public/app.js"
-          unzip -l "$APK" | grep -q "assets/public/index.html"
-          unzip -l "$APK" | grep -q "assets/public/styles.css"
-          unzip -l "$APK" | grep -q "assets/public/native-bridge.js"
-          unzip -l "$APK" | grep -q "assets/public/logo-512.png"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
+            verify \
+            --verbose \
+            "$APK"
 
-          echo "AURIX web assets: OK"
+          echo "APK signature: OK"
 
 
       # ============================================================
-      # 13. APK
+      # 13. VERIFY APK CONTENT
       # ============================================================
 
-      - name: Copy APK
+      - name: Verify AURIX web assets inside APK
+        working-directory: aurix-release/android
+        shell: bash
         run: |
 
-          APK=$(find \
-            aurix-release/android/app/build/outputs/apk/release \
-            -type f \
-            -name "*.apk" \
-            | head -n 1)
+          set -e
+
+          APK=$(
+            find \
+              app/build/outputs/apk/release \
+              -type f \
+              -name "*.apk" \
+              | head -n 1
+          )
+
+          test -n "$APK"
+
+
+          unzip -l "$APK" \
+            | grep -q "assets/public/index.html"
+
+
+          unzip -l "$APK" \
+            | grep -q "assets/public/app.js"
+
+
+          unzip -l "$APK" \
+            | grep -q "assets/public/styles.css"
+
+
+          unzip -l "$APK" \
+            | grep -q "assets/public/native-bridge.js"
+
+
+          unzip -l "$APK" \
+            | grep -q "assets/public/logo-512.png"
+
+
+          echo "AURIX web assets inside APK: OK"
+
+
+      # ============================================================
+      # 14. COPY APK
+      # ============================================================
+
+      - name: Prepare final APK
+        shell: bash
+        run: |
+
+          set -e
+
+          APK=$(
+            find \
+              aurix-release/android/app/build/outputs/apk/release \
+              -type f \
+              -name "*.apk" \
+              | head -n 1
+          )
 
           test -n "$APK"
 
           cp "$APK" AURIX-release.apk
 
+          test -s AURIX-release.apk
+
           ls -lh AURIX-release.apk
 
 
       # ============================================================
-      # 14. ARTIFACT
+      # 15. UPLOAD ARTIFACT
       # ============================================================
 
-      - name: Upload APK
+      - name: Upload AURIX APK
         uses: actions/upload-artifact@v4
         with:
           name: AURIX-release-signed
