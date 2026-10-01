@@ -19,6 +19,8 @@ jobs:
         run: |
           unzip -q AURIX-Android-Release-v1-SDK-GRADLE.zip
           test -f aurix-release/android/settings.gradle
+          test -f aurix-release/www/app.js
+          test -f aurix-release/www/logo-512.png
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
@@ -64,11 +66,12 @@ jobs:
                   1
               )
 
-          s = s.replace(
-              "        release {\n            minifyEnabled false",
-              "        release {\n            signingConfig signingConfigs.release\n            minifyEnabled false",
-              1
-          )
+          if "signingConfig signingConfigs.release" not in s:
+              s = s.replace(
+                  "        release {\n            minifyEnabled false",
+                  "        release {\n            signingConfig signingConfigs.release\n            minifyEnabled false",
+                  1
+              )
 
           p.write_text(s)
           PY
@@ -83,6 +86,82 @@ jobs:
         run: |
           sed -i 's/protected void onResume()/public void onResume()/g' app/src/main/java/com/aurix/driver/MainActivity.java
           sed -i 's/protected void onDestroy()/public void onDestroy()/g' app/src/main/java/com/aurix/driver/MainActivity.java
+
+      - name: Fix WebView startup and app icon
+        working-directory: aurix-release/android
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("app/src/main/java/com/aurix/driver/MainActivity.java")
+          s = p.read_text()
+
+          old = '''        WebView webView = getBridge().getWebView();
+          webView.getSettings().setJavaScriptEnabled(true);
+          webView.addJavascriptInterface(new NativeBridge(this), "AURIXNative");'''
+
+          new = '''        WebView webView = getBridge().getWebView();
+          webView.getSettings().setJavaScriptEnabled(true);
+          webView.getSettings().setDomStorageEnabled(true);
+          webView.getSettings().setGeolocationEnabled(true);
+          webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
+          webView.addJavascriptInterface(new NativeBridge(this), "AURIXNative");
+          webView.postDelayed(() -> {
+              try {
+                  webView.clearCache(true);
+                  webView.reload();
+              } catch (Exception ignored) {}
+          }, 250);'''
+
+          if old in s:
+              s = s.replace(old, new, 1)
+          elif "webView.postDelayed(() ->" not in s:
+              raise SystemExit("WebView block not found")
+
+          p.write_text(s)
+          PY
+
+          mkdir -p app/src/main/res/drawable
+          cp ../../www/logo-512.png app/src/main/res/drawable/aurix_icon.png
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("app/src/main/AndroidManifest.xml")
+          s = p.read_text()
+
+          old = '''        android:label="@string/app_name"
+          android:theme="@style/AppTheme"'''
+
+          new = '''        android:label="@string/app_name"
+          android:icon="@drawable/aurix_icon"
+          android:roundIcon="@drawable/aurix_icon"
+          android:theme="@style/AppTheme"'''
+
+          if 'android:icon="@drawable/aurix_icon"' not in s:
+              s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          PY
+
+      - name: Disable service worker in Android build
+        working-directory: aurix-release/www
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("app.js")
+          s = p.read_text()
+
+          old = """if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).then(r=>r.update()).catch(e=>console.warn('[AURIX] service worker',e));}"""
+
+          new = """if(!window.AURIXNativeBridge?.available && 'serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js',{updateViaCache:'none'}).then(r=>r.update()).catch(e=>console.warn('[AURIX] service worker',e));}"""
+
+          if old in s:
+              s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          PY
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -110,7 +189,6 @@ jobs:
 
       - name: Find generated APK
         run: |
-          echo "Generated APK:"
           find aurix-release/android/app/build/outputs/apk -type f -name "*.apk" -print
 
       - name: Rename APK
