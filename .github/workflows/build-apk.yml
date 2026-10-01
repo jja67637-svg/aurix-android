@@ -26,10 +26,12 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: Fix Capacitor Android dependency
+      - name: Fix Android compatibility
         working-directory: aurix-release/android
         run: |
           sed -i 's/com\.getcapacitor:capacitor-android:8\.5\.2/com.capacitorjs:core:8.5.2/g' app/build.gradle
+          sed -i 's/protected void onResume()/public void onResume()/g' app/src/main/java/com/aurix/driver/MainActivity.java
+          sed -i 's/protected void onDestroy()/public void onDestroy()/g' app/src/main/java/com/aurix/driver/MainActivity.java
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
