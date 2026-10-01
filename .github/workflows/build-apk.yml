@@ -60,7 +60,59 @@ jobs:
 
           npx cap sync android
 
-      - name: Fix Capacitor Android dependency
+            - name: Fix Capacitor Android dependency
+        shell: bash
+        run: |
+          set -e
+
+          SETTINGS="$ANDROID_DIR/settings.gradle"
+          ROOT_GRADLE="$ANDROID_DIR/build.gradle"
+          APP_GRADLE="$ANDROID_DIR/app/build.gradle"
+          CAP_DIR="$PROJECT_DIR/node_modules/@capacitor/android/capacitor"
+
+          test -f "$CAP_DIR/build.gradle"
+
+          # settings.gradle — lokalny Capacitor, bez dependencyResolutionManagement
+          printf '%s\n' \
+            'pluginManagement {' \
+            '    repositories {' \
+            '        google()' \
+            '        mavenCentral()' \
+            '        gradlePluginPortal()' \
+            '    }' \
+            '}' \
+            '' \
+            "rootProject.name = 'AURIX'" \
+            '' \
+            "include ':app'" \
+            "include ':capacitor-android'" \
+            "project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/android/capacitor')" \
+            > "$SETTINGS"
+
+          # build.gradle — repozytoria dla zależności aplikacji
+          printf '%s\n' \
+            "plugins {" \
+            "    id 'com.android.application' version '8.13.0' apply false" \
+            "}" \
+            '' \
+            "allprojects {" \
+            "    repositories {" \
+            "        google()" \
+            "        mavenCentral()" \
+            "    }" \
+            "}" \
+            > "$ROOT_GRADLE"
+
+          # app/build.gradle — lokalny moduł Capacitor
+          python3 -c "from pathlib import Path; p=Path('$APP_GRADLE'); s=p.read_text(); s=s.replace(\"implementation 'com.getcapacitor:capacitor-android:8.5.2'\", \"implementation project(':capacitor-android')\"); p.write_text(s)"
+
+          grep -q "include ':capacitor-android'" "$SETTINGS"
+          grep -q "project(':capacitor-android')" "$SETTINGS"
+          grep -q "google()" "$ROOT_GRADLE"
+          grep -q "mavenCentral()" "$ROOT_GRADLE"
+          grep -q "implementation project(':capacitor-android')" "$APP_GRADLE"
+
+          echo "Capacitor + repositories configured correctly."
         shell: bash
         run: |
           set -e
