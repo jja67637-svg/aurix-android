@@ -76,7 +76,7 @@ jobs:
       - name: Fix Capacitor Android dependency
         working-directory: aurix-release/android
         run: |
-          sed -i 's/com\.getcapacitor:capacitor-android:8\.5\.2/com.capacitorjs:core:8.5.2/g'
+          sed -i 's/com\.getcapacitor:capacitor-android:8\.5\.2/com.capacitorjs:core:8.5.2/g' app/build.gradle
 
       - name: Fix Android compatibility
         working-directory: aurix-release/android
