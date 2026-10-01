@@ -47,9 +47,14 @@ jobs:
         working-directory: aurix-release/android
         run: gradle --no-daemon assembleRelease
 
+      - name: Find generated APK
+        run: |
+          echo "Generated APK files:"
+          find aurix-release/android/app/build/outputs/apk -type f -name "*.apk" -print
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: AURIX-release-APK
-          path: aurix-release/android/app/build/outputs/apk/release/app-release.apk
+          path: aurix-release/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
