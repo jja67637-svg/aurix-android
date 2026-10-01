@@ -2,7 +2,6 @@ name: Build AURIX APK
 
 on:
   workflow_dispatch:
-
   push:
     paths:
       - "AURIX-Android-Release-v1-SDK-GRADLE-FIXED.zip"
@@ -16,361 +15,96 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
-      # =========================================================
-      # CHECKOUT
-      # =========================================================
-
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-
-      # =========================================================
-      # CHECK ZIP
-      # =========================================================
-
-      - name: Check AURIX ZIP
+      - name: Prepare project
         shell: bash
         run: |
           set -e
 
           ZIP="AURIX-Android-Release-v1-SDK-GRADLE-FIXED.zip"
 
-          if [ ! -f "$ZIP" ]; then
-            echo "ERROR: AURIX ZIP not found"
-            ls -lah
-            exit 1
-          fi
-
-          echo "AURIX ZIP found:"
-          ls -lh "$ZIP"
-
-
-      # =========================================================
-      # UNPACK
-      # =========================================================
-
-      - name: Unpack AURIX
-        shell: bash
-        run: |
-          set -e
+          test -f "$ZIP"
 
           rm -rf aurix-build
           mkdir -p aurix-build
 
-          unzip -q \
-            "AURIX-Android-Release-v1-SDK-GRADLE-FIXED.zip" \
-            -d aurix-build
-
-          echo "Project structure:"
-          find aurix-build -maxdepth 4 -type f | sort | head -300
-
-
-      # =========================================================
-      # DETECT ANDROID PROJECT
-      # =========================================================
-
-      - name: Detect Android project
-        shell: bash
-        run: |
-          set -e
+          unzip -q "$ZIP" -d aurix-build
 
           if [ -f "aurix-build/aurix-release/android/settings.gradle" ]; then
-            ANDROID_DIR="aurix-build/aurix-release/android"
-
+            echo "ANDROID_DIR=aurix-build/aurix-release/android" >> "$GITHUB_ENV"
+            echo "PROJECT_DIR=aurix-build/aurix-release" >> "$GITHUB_ENV"
           elif [ -f "aurix-build/android/settings.gradle" ]; then
-            ANDROID_DIR="aurix-build/android"
-
+            echo "ANDROID_DIR=aurix-build/android" >> "$GITHUB_ENV"
+            echo "PROJECT_DIR=aurix-build" >> "$GITHUB_ENV"
           else
-            echo "ERROR: Android project not found"
-
-            find aurix-build \
-              -name settings.gradle \
-              -o -name settings.gradle.kts
-
+            echo "Android project not found"
+            find aurix-build -name settings.gradle
             exit 1
           fi
 
-          echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
-
-          echo "Android project:"
-          echo "$ANDROID_DIR"
-
-
-      # =========================================================
-      # CHECK ANDROID PROJECT
-      # =========================================================
-
-      - name: Check Android project
-        shell: bash
-        run: |
-          set -e
-
-          test -f "$ANDROID_DIR/settings.gradle"
-          test -f "$ANDROID_DIR/build.gradle"
-          test -f "$ANDROID_DIR/app/build.gradle"
-          test -f "$ANDROID_DIR/app/src/main/AndroidManifest.xml"
-
-          echo "Android project: OK"
-
-
-      # =========================================================
-      # CHECK WEB FILES
-      # =========================================================
-
-      - name: Check AURIX web files
-        shell: bash
-        run: |
-          set -e
-
-          WEB_DIR="aurix-build/aurix-release/www"
-
-          if [ ! -d "$WEB_DIR" ]; then
-            echo "WARNING: www directory not found"
-            exit 0
-          fi
-
-          test -f "$WEB_DIR/index.html"
-          test -f "$WEB_DIR/app.js"
-          test -f "$WEB_DIR/styles.css"
-
-          echo "AURIX web files: OK"
-
-
-      # =========================================================
-      # NODE.JS 22
-      # =========================================================
-
-      - name: Set up Node.js 22
+      - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
           node-version: "22"
 
-
-      # =========================================================
-      # INSTALL NPM DEPENDENCIES
-      # =========================================================
-
-      - name: Install Capacitor dependencies
+      - name: Install dependencies and sync Capacitor
         shell: bash
         run: |
           set -e
 
-          cd aurix-build/aurix-release
+          cd "$PROJECT_DIR"
 
-          echo "Node:"
-          node --version
-
-          echo "NPM:"
-          npm --version
-
-          npm install \
-            --no-audit \
-            --no-fund
-
-          echo "NPM dependencies installed."
-
-
-      # =========================================================
-      # CAPACITOR SYNC
-      # =========================================================
-
-      - name: Sync Capacitor Android
-        shell: bash
-        run: |
-          set -e
-
-          cd aurix-build/aurix-release
+          npm install --no-audit --no-fund
 
           npx cap sync android
 
-          echo "Capacitor sync completed."
-
-
-      # =========================================================
-      # FIX CAPACITOR ANDROID
-      # =========================================================
-
-      - name: Fix Capacitor Android module
+      - name: Fix Capacitor Android dependency
         shell: bash
         run: |
           set -e
-
-          PROJECT_DIR="aurix-build/aurix-release"
-          ANDROID_DIR="$PROJECT_DIR/android"
 
           SETTINGS="$ANDROID_DIR/settings.gradle"
           APP_GRADLE="$ANDROID_DIR/app/build.gradle"
+          CAP_DIR="$PROJECT_DIR/node_modules/@capacitor/android/capacitor"
 
-          CAP_DIR="$PROJECT_DIR/node_modules/@capacitor/android"
+          test -f "$CAP_DIR/build.gradle"
 
-          echo "======================================"
-          echo "FIXING CAPACITOR ANDROID"
-          echo "======================================"
+          printf '%s\n' \
+            'pluginManagement {' \
+            '    repositories {' \
+            '        google()' \
+            '        mavenCentral()' \
+            '        gradlePluginPortal()' \
+            '    }' \
+            '}' \
+            '' \
+            "rootProject.name = 'AURIX'" \
+            '' \
+            "include ':app'" \
+            "include ':capacitor-android'" \
+            "project(':capacitor-android').projectDir = new File('../node_modules/@capacitor/android/capacitor')" \
+            > "$SETTINGS"
 
-          # -------------------------------------------------------
-          # CHECK CAPACITOR
-          # -------------------------------------------------------
-
-          test -d "$CAP_DIR"
-          test -f "$CAP_DIR/capacitor/build.gradle"
-
-          echo "Capacitor Android module: OK"
-
-
-          # -------------------------------------------------------
-          # REBUILD SETTINGS.GRADLE
-          # -------------------------------------------------------
-
-          cat > "$SETTINGS" <<'EOF'
-pluginManagement {
-    repositories {
-        google()
-        mavenCentral()
-        gradlePluginPortal()
-    }
-}
-
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
-
-    repositories {
-        google()
-        mavenCentral()
-    }
-}
-
-rootProject.name = 'AURIX'
-
-include ':app'
-
-include ':capacitor-android'
-
-project(':capacitor-android').projectDir = new File(
-    '../node_modules/@capacitor/android/capacitor'
-)
-EOF
-
-          echo "settings.gradle recreated."
-
-
-          # -------------------------------------------------------
-          # FIX APP BUILD.GRADLE
-          # -------------------------------------------------------
-
-          python3 <<'PY'
-from pathlib import Path
-
-p = Path("aurix-build/aurix-release/android/app/build.gradle")
-
-s = p.read_text()
-
-old = "implementation 'com.getcapacitor:capacitor-android:8.5.2'"
-new = "implementation project(':capacitor-android')"
-
-if old in s:
-    s = s.replace(old, new)
-
-elif new not in s:
-    lines = s.splitlines()
-
-    found = False
-
-    for i, line in enumerate(lines):
-        if "capacitor-android" in line:
-            lines[i] = "    implementation project(':capacitor-android')"
-            found = True
-
-    if not found:
-        raise SystemExit(
-            "ERROR: Capacitor Android dependency not found."
-        )
-
-    s = "\n".join(lines) + "\n"
-
-p.write_text(s)
-
-print("app/build.gradle fixed.")
-PY
-
-
-          # -------------------------------------------------------
-          # SHOW CONFIG
-          # -------------------------------------------------------
-
-          echo ""
-          echo "======================================"
-          echo "CAPACITOR CONFIGURATION"
-          echo "======================================"
-
-          echo ""
-          echo "--- settings.gradle ---"
-
-          cat "$SETTINGS"
-
-          echo ""
-          echo "--- app/build.gradle Capacitor line ---"
-
-          grep -n "capacitor-android" "$APP_GRADLE"
-
-          echo ""
-          echo "CAPACITOR FIX: OK"
-
-
-      # =========================================================
-      # VERIFY CAPACITOR
-      # =========================================================
-
-      - name: Verify Capacitor Android
-        shell: bash
-        run: |
-          set -e
-
-          PROJECT_DIR="aurix-build/aurix-release"
-
-          CAP_DIR="$PROJECT_DIR/node_modules/@capacitor/android"
-
-          SETTINGS="$PROJECT_DIR/android/settings.gradle"
-
-          APP_GRADLE="$PROJECT_DIR/android/app/build.gradle"
-
-          test -d "$CAP_DIR"
-          test -f "$CAP_DIR/capacitor/build.gradle"
+          python3 -c "from pathlib import Path; p=Path('$ANDROID_DIR/app/build.gradle'); s=p.read_text(); s=s.replace(\"implementation 'com.getcapacitor:capacitor-android:8.5.2'\", \"implementation project(':capacitor-android')\"); p.write_text(s)"
 
           grep -q "include ':capacitor-android'" "$SETTINGS"
 
-          grep -q "project(':capacitor-android')" "$SETTINGS"
+          grep -q "implementation project(':capacitor-android')" "$APP_GRADLE"
 
-          grep -q "PREFER_PROJECT" "$SETTINGS"
+          echo "Capacitor local module configured."
 
-          grep -q \
-            "implementation project(':capacitor-android')" \
-            "$APP_GRADLE"
-
-          echo ""
-          echo "CAPACITOR ANDROID VERIFIED."
-
-
-      # =========================================================
-      # JAVA 21
-      # =========================================================
-
-      - name: Set up Java 21
+      - name: Setup Java 21
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
 
-
-      # =========================================================
-      # ANDROID SDK
-      # =========================================================
-
-      - name: Set up Android SDK
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
-
-      - name: Install Android SDK
+      - name: Install Android SDK packages
         shell: bash
         run: |
           set -e
@@ -382,37 +116,18 @@ PY
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-          echo "Android SDK ready."
-
-
-      # =========================================================
-      # GRADLE 8.14.3
-      # =========================================================
-
-      - name: Set up Gradle
+      - name: Setup Gradle 8.14.3
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.14.3"
 
-
-      - name: Check Gradle
-        shell: bash
-        run: |
-          gradle --version
-
-
-      # =========================================================
-      # BUILD APK
-      # =========================================================
-
-      - name: Build AURIX APK
+      - name: Build APK
         shell: bash
         run: |
           set -e
 
           cd "$ANDROID_DIR"
 
-          echo ""
           echo "======================================"
           echo "BUILDING AURIX APK"
           echo "======================================"
@@ -423,74 +138,33 @@ PY
             clean \
             assembleDebug
 
-
-      # =========================================================
-      # FIND APK
-      # =========================================================
-
-      - name: Find APK
+      - name: Verify and stage APK
         shell: bash
         run: |
           set -e
 
-          APK=$(find \
-            "$ANDROID_DIR/app/build/outputs/apk" \
+          APK="$(find "$ANDROID_DIR/app/build/outputs/apk" \
             -type f \
-            -name "*.apk" \
-            | head -n 1)
+            -name '*.apk' \
+            | head -n 1)"
 
           if [ -z "$APK" ]; then
-            echo "ERROR: APK was not created."
-
-            find \
-              "$ANDROID_DIR/app/build" \
-              -type f \
-              2>/dev/null \
-              | sort | head -300
-
+            echo "APK was not created."
+            find "$ANDROID_DIR/app/build" -type f 2>/dev/null | sort
             exit 1
           fi
-
-          echo "APK FOUND:"
-          ls -lh "$APK"
 
           mkdir -p output
 
           cp "$APK" output/AURIX.apk
 
-          echo ""
-          echo "Final APK:"
-          ls -lh output/AURIX.apk
-
-
-      # =========================================================
-      # VERIFY APK
-      # =========================================================
-
-      - name: Verify APK
-        shell: bash
-        run: |
-          set -e
-
-          test -s output/AURIX.apk
-
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
             verify \
             output/AURIX.apk
 
-          echo ""
-          echo "======================================"
-          echo "AURIX APK READY"
-          echo "======================================"
-
           ls -lh output/AURIX.apk
 
-
-      # =========================================================
-      # UPLOAD APK
-      # =========================================================
-
-      - name: Upload AURIX APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: AURIX-APK
