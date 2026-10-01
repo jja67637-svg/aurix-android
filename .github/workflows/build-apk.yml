@@ -75,8 +75,6 @@ jobs:
         run: |
           set -e
 
-          ANDROID_DIR=""
-
           if [ -f "aurix-build/aurix-release/android/settings.gradle" ]; then
             ANDROID_DIR="aurix-build/aurix-release/android"
 
@@ -95,7 +93,6 @@ jobs:
 
           echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
 
-          echo ""
           echo "Android project:"
           echo "$ANDROID_DIR"
 
@@ -126,13 +123,9 @@ jobs:
         run: |
           set -e
 
-          if [ -d "$ANDROID_DIR/../www" ]; then
-            WEB_DIR="$ANDROID_DIR/../www"
+          WEB_DIR="aurix-build/aurix-release/www"
 
-          elif [ -d "aurix-build/aurix-release/www" ]; then
-            WEB_DIR="aurix-build/aurix-release/www"
-
-          else
+          if [ ! -d "$WEB_DIR" ]; then
             echo "WARNING: www directory not found"
             exit 0
           fi
@@ -145,7 +138,7 @@ jobs:
 
 
       # =========================================================
-      # NODE.JS
+      # NODE.JS 22
       # =========================================================
 
       - name: Set up Node.js 22
@@ -155,7 +148,7 @@ jobs:
 
 
       # =========================================================
-      # NPM / CAPACITOR
+      # INSTALL NPM DEPENDENCIES
       # =========================================================
 
       - name: Install Capacitor dependencies
@@ -165,22 +158,17 @@ jobs:
 
           cd aurix-build/aurix-release
 
-          echo "Node version:"
+          echo "Node:"
           node --version
 
-          echo ""
-          echo "NPM version:"
+          echo "NPM:"
           npm --version
-
-          echo ""
-          echo "Installing dependencies..."
 
           npm install \
             --no-audit \
             --no-fund
 
-          echo ""
-          echo "Dependencies installed successfully."
+          echo "NPM dependencies installed."
 
 
       # =========================================================
@@ -194,12 +182,9 @@ jobs:
 
           cd aurix-build/aurix-release
 
-          echo "Running Capacitor sync..."
-
           npx cap sync android
 
-          echo ""
-          echo "Capacitor sync completed successfully."
+          echo "Capacitor sync completed."
 
 
       # =========================================================
@@ -219,125 +204,98 @@ jobs:
 
           CAP_DIR="$PROJECT_DIR/node_modules/@capacitor/android"
 
-          echo ""
           echo "======================================"
           echo "FIXING CAPACITOR ANDROID"
           echo "======================================"
 
           # -------------------------------------------------------
-          # CHECK MODULE
+          # CHECK CAPACITOR
           # -------------------------------------------------------
 
-          echo ""
-          echo "Checking @capacitor/android..."
+          test -d "$CAP_DIR"
+          test -f "$CAP_DIR/capacitor/build.gradle"
 
-          if [ ! -d "$CAP_DIR" ]; then
-            echo "ERROR: @capacitor/android not found:"
-            echo "$CAP_DIR"
-            exit 1
-          fi
-
-          if [ ! -f "$CAP_DIR/capacitor/build.gradle" ]; then
-            echo "ERROR: Capacitor Android Gradle module not found:"
-            echo "$CAP_DIR/capacitor/build.gradle"
-            exit 1
-          fi
-
-          echo "@capacitor/android: OK"
+          echo "Capacitor Android module: OK"
 
 
           # -------------------------------------------------------
-          # PATCH SETTINGS.GRADLE
+          # REBUILD SETTINGS.GRADLE
           # -------------------------------------------------------
 
-          echo ""
-          echo "Patching settings.gradle..."
+          cat > "$SETTINGS" <<'EOF'
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'AURIX'
+
+include ':app'
+
+include ':capacitor-android'
+
+project(':capacitor-android').projectDir = new File(
+    '../node_modules/@capacitor/android/capacitor'
+)
+EOF
+
+          echo "settings.gradle recreated."
+
+
+          # -------------------------------------------------------
+          # FIX APP BUILD.GRADLE
+          # -------------------------------------------------------
 
           python3 <<'PY'
-          from pathlib import Path
+from pathlib import Path
 
-          p = Path("aurix-build/aurix-release/android/settings.gradle")
+p = Path("aurix-build/aurix-release/android/app/build.gradle")
 
-          s = p.read_text()
+s = p.read_text()
 
-          include_line = "include ':capacitor-android'"
+old = "implementation 'com.getcapacitor:capacitor-android:8.5.2'"
+new = "implementation project(':capacitor-android')"
 
-          project_line = (
-              "project(':capacitor-android').projectDir = "
-              "new File('../node_modules/@capacitor/android/capacitor')"
-          )
+if old in s:
+    s = s.replace(old, new)
 
-          if include_line not in s:
-              s += "\n" + include_line + "\n"
+elif new not in s:
+    lines = s.splitlines()
 
-          if project_line not in s:
-              s += project_line + "\n"
+    found = False
 
-          p.write_text(s)
+    for i, line in enumerate(lines):
+        if "capacitor-android" in line:
+            lines[i] = "    implementation project(':capacitor-android')"
+            found = True
 
-          print("settings.gradle patched successfully.")
-          PY
+    if not found:
+        raise SystemExit(
+            "ERROR: Capacitor Android dependency not found."
+        )
 
+    s = "\n".join(lines) + "\n"
 
-          # -------------------------------------------------------
-          # PATCH APP BUILD.GRADLE
-          # -------------------------------------------------------
+p.write_text(s)
 
-          echo ""
-          echo "Patching app/build.gradle..."
-
-          python3 <<'PY'
-          from pathlib import Path
-
-          p = Path("aurix-build/aurix-release/android/app/build.gradle")
-
-          s = p.read_text()
-
-          old = "implementation 'com.getcapacitor:capacitor-android:8.5.2'"
-
-          new = "implementation project(':capacitor-android')"
-
-          if old in s:
-              s = s.replace(old, new)
-              print("Maven Capacitor dependency replaced.")
-
-          elif new in s:
-              print("Local Capacitor dependency already present.")
-
-          else:
-              print("")
-              print("Searching for Capacitor dependency...")
-
-              lines = s.splitlines()
-
-              found = False
-
-              for i, line in enumerate(lines):
-
-                  if "capacitor-android" in line:
-
-                      print("Found:")
-                      print(line)
-
-                      lines[i] = "    implementation project(':capacitor-android')"
-
-                      found = True
-
-              if not found:
-                  raise SystemExit(
-                      "ERROR: Capacitor Android dependency was not found."
-                  )
-
-              s = "\n".join(lines) + "\n"
-
-          p.write_text(s)
-
-          print("app/build.gradle patched successfully.")
-          PY
+print("app/build.gradle fixed.")
+PY
 
 
           # -------------------------------------------------------
-          # SHOW RESULT
+          # SHOW CONFIG
           # -------------------------------------------------------
 
           echo ""
@@ -351,17 +309,12 @@ jobs:
           cat "$SETTINGS"
 
           echo ""
-          echo "--- Capacitor dependency ---"
+          echo "--- app/build.gradle Capacitor line ---"
 
-          grep -n "capacitor-android" "$APP_GRADLE" || true
-
-          echo ""
-          echo "--- Capacitor Android module ---"
-
-          ls -la "$CAP_DIR/capacitor"
+          grep -n "capacitor-android" "$APP_GRADLE"
 
           echo ""
-          echo "CAPACITOR ANDROID FIX: OK"
+          echo "CAPACITOR FIX: OK"
 
 
       # =========================================================
@@ -373,24 +326,29 @@ jobs:
         run: |
           set -e
 
-          CAP_DIR="aurix-build/aurix-release/node_modules/@capacitor/android"
+          PROJECT_DIR="aurix-build/aurix-release"
+
+          CAP_DIR="$PROJECT_DIR/node_modules/@capacitor/android"
+
+          SETTINGS="$PROJECT_DIR/android/settings.gradle"
+
+          APP_GRADLE="$PROJECT_DIR/android/app/build.gradle"
 
           test -d "$CAP_DIR"
           test -f "$CAP_DIR/capacitor/build.gradle"
 
-          grep -q "include ':capacitor-android'" \
-            aurix-build/aurix-release/android/settings.gradle
+          grep -q "include ':capacitor-android'" "$SETTINGS"
 
-          grep -q "project(':capacitor-android')" \
-            aurix-build/aurix-release/android/settings.gradle
+          grep -q "project(':capacitor-android')" "$SETTINGS"
 
-          grep -q "implementation project(':capacitor-android')" \
-            aurix-build/aurix-release/android/app/build.gradle
+          grep -q "PREFER_PROJECT" "$SETTINGS"
+
+          grep -q \
+            "implementation project(':capacitor-android')" \
+            "$APP_GRADLE"
 
           echo ""
-          echo "======================================"
-          echo "CAPACITOR ANDROID: VERIFIED"
-          echo "======================================"
+          echo "CAPACITOR ANDROID VERIFIED."
 
 
       # =========================================================
@@ -424,12 +382,11 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
-          echo ""
-          echo "Android SDK installed successfully."
+          echo "Android SDK ready."
 
 
       # =========================================================
-      # GRADLE
+      # GRADLE 8.14.3
       # =========================================================
 
       - name: Set up Gradle
@@ -476,9 +433,6 @@ jobs:
         run: |
           set -e
 
-          echo ""
-          echo "Searching for APK..."
-
           APK=$(find \
             "$ANDROID_DIR/app/build/outputs/apk" \
             -type f \
@@ -486,23 +440,17 @@ jobs:
             | head -n 1)
 
           if [ -z "$APK" ]; then
-
             echo "ERROR: APK was not created."
-
-            echo ""
-            echo "Available build files:"
 
             find \
               "$ANDROID_DIR/app/build" \
               -type f \
               2>/dev/null \
-              | sort \
-              | head -300
+              | sort | head -300
 
             exit 1
           fi
 
-          echo ""
           echo "APK FOUND:"
           ls -lh "$APK"
 
@@ -525,9 +473,6 @@ jobs:
           set -e
 
           test -s output/AURIX.apk
-
-          echo ""
-          echo "Verifying APK..."
 
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
             verify \
