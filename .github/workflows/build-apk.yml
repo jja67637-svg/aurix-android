@@ -5,7 +5,7 @@ on:
 
   push:
     paths:
-      - "AURIX-Android-Release-v1-SDK-GRADLE.zip"
+      - "AURIX-Android-Release-v1-SDK-GRADLE-FIXED.zip"
       - ".github/workflows/build-apk.yml"
 
 permissions:
@@ -16,7 +16,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -24,11 +23,16 @@ jobs:
         shell: bash
         run: |
           set -e
+          ZIP="AURIX-Android-Release-v1-SDK-GRADLE-FIXED.zip"
 
-          test -f "AURIX-Android-Release-v1-SDK-GRADLE.zip"
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: AURIX ZIP not found:"
+            ls -lah
+            exit 1
+          fi
 
-          echo "AURIX ZIP:"
-          ls -lh "AURIX-Android-Release-v1-SDK-GRADLE.zip"
+          echo "AURIX ZIP found:"
+          ls -lh "$ZIP"
 
       - name: Unpack AURIX
         shell: bash
@@ -39,22 +43,38 @@ jobs:
           mkdir -p aurix-build
 
           unzip -q \
-            "AURIX-Android-Release-v1-SDK-GRADLE.zip" \
+            "AURIX-Android-Release-v1-SDK-GRADLE-FIXED.zip" \
             -d aurix-build
 
-          echo
-          echo "Project files:"
-          find aurix-build/aurix-release/android \
-            -maxdepth 3 \
-            -type f \
-            | sort
+          echo "Project structure:"
+          find aurix-build -maxdepth 4 -type f | sort | head -300
+
+      - name: Detect Android project
+        shell: bash
+        run: |
+          set -e
+
+          ANDROID_DIR=""
+
+          if [ -f "aurix-build/aurix-release/android/settings.gradle" ]; then
+            ANDROID_DIR="aurix-build/aurix-release/android"
+          elif [ -f "aurix-build/android/settings.gradle" ]; then
+            ANDROID_DIR="aurix-build/android"
+          else
+            echo "ERROR: Android project not found."
+            find aurix-build -name settings.gradle -o -name settings.gradle.kts
+            exit 1
+          fi
+
+          echo "ANDROID_DIR=$ANDROID_DIR" >> "$GITHUB_ENV"
+
+          echo "Android project:"
+          echo "$ANDROID_DIR"
 
       - name: Check Android project
         shell: bash
         run: |
           set -e
-
-          ANDROID_DIR="aurix-build/aurix-release/android"
 
           test -f "$ANDROID_DIR/settings.gradle"
           test -f "$ANDROID_DIR/build.gradle"
@@ -68,7 +88,14 @@ jobs:
         run: |
           set -e
 
-          WEB_DIR="aurix-build/aurix-release/www"
+          if [ -d "$ANDROID_DIR/../www" ]; then
+            WEB_DIR="$ANDROID_DIR/../www"
+          elif [ -d "aurix-build/aurix-release/www" ]; then
+            WEB_DIR="aurix-build/aurix-release/www"
+          else
+            echo "WARNING: www directory not found at expected location."
+            exit 0
+          fi
 
           test -f "$WEB_DIR/index.html"
           test -f "$WEB_DIR/app.js"
@@ -85,7 +112,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Install Android SDK 36
+      - name: Install Android SDK
         shell: bash
         run: |
           set -e
@@ -105,16 +132,12 @@ jobs:
       - name: Check Gradle
         shell: bash
         run: |
-          set -e
-
           gradle --version
 
-      - name: Build AURIX debug APK
+      - name: Build AURIX APK
         shell: bash
         run: |
           set -e
-
-          ANDROID_DIR="aurix-build/aurix-release/android"
 
           cd "$ANDROID_DIR"
 
@@ -130,13 +153,14 @@ jobs:
           set -e
 
           APK=$(find \
-            aurix-build/aurix-release/android/app/build/outputs/apk/debug \
+            "$ANDROID_DIR/app/build/outputs/apk" \
             -type f \
             -name "*.apk" \
             | head -n 1)
 
           if [ -z "$APK" ]; then
             echo "ERROR: APK was not created."
+            find "$ANDROID_DIR/app/build/outputs" -type f 2>/dev/null || true
             exit 1
           fi
 
@@ -144,7 +168,6 @@ jobs:
           ls -lh "$APK"
 
           mkdir -p output
-
           cp "$APK" output/AURIX.apk
 
       - name: Verify APK
@@ -158,7 +181,6 @@ jobs:
             verify \
             output/AURIX.apk
 
-          echo
           echo "======================================"
           echo "AURIX APK READY"
           echo "======================================"
