@@ -23,10 +23,11 @@ jobs:
         shell: bash
         run: |
           set -e
+
           ZIP="AURIX-Android-Release-v1-SDK-GRADLE-FIXED.zip"
 
           if [ ! -f "$ZIP" ]; then
-            echo "ERROR: AURIX ZIP not found:"
+            echo "ERROR: AURIX ZIP not found"
             ls -lah
             exit 1
           fi
@@ -61,8 +62,10 @@ jobs:
           elif [ -f "aurix-build/android/settings.gradle" ]; then
             ANDROID_DIR="aurix-build/android"
           else
-            echo "ERROR: Android project not found."
-            find aurix-build -name settings.gradle -o -name settings.gradle.kts
+            echo "ERROR: Android project not found"
+            find aurix-build \
+              -name settings.gradle \
+              -o -name settings.gradle.kts
             exit 1
           fi
 
@@ -93,7 +96,7 @@ jobs:
           elif [ -d "aurix-build/aurix-release/www" ]; then
             WEB_DIR="aurix-build/aurix-release/www"
           else
-            echo "WARNING: www directory not found at expected location."
+            echo "WARNING: www directory not found"
             exit 0
           fi
 
@@ -103,11 +106,85 @@ jobs:
 
           echo "AURIX web files: OK"
 
+      # =========================================================
+      # NODE + CAPACITOR
+      # =========================================================
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Capacitor dependencies
+        shell: bash
+        run: |
+          set -e
+
+          cd aurix-build/aurix-release
+
+          echo "Node version:"
+          node --version
+
+          echo "NPM version:"
+          npm --version
+
+          echo "Installing dependencies..."
+
+          npm install \
+            --no-audit \
+            --no-fund
+
+          echo "Dependencies installed"
+
+      - name: Sync Capacitor Android
+        shell: bash
+        run: |
+          set -e
+
+          cd aurix-build/aurix-release
+
+          echo "Running Capacitor sync..."
+
+          npx cap sync android
+
+          echo "Capacitor sync completed"
+
+      - name: Verify Capacitor Android
+        shell: bash
+        run: |
+          set -e
+
+          CAP_DIR="aurix-build/aurix-release/node_modules/@capacitor/android"
+
+          if [ ! -d "$CAP_DIR" ]; then
+            echo "ERROR: @capacitor/android was not installed"
+            exit 1
+          fi
+
+          echo "@capacitor/android found:"
+          ls -lah "$CAP_DIR"
+
+          echo ""
+          echo "Capacitor Android Gradle files:"
+          find "$CAP_DIR" \
+            -maxdepth 3 \
+            -type f \
+            \( -name "*.gradle" -o -name "*.gradle.kts" \) \
+            | sort
+
+      # =========================================================
+      # JAVA
+      # =========================================================
+
       - name: Set up Java 21
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "21"
+
+      # =========================================================
+      # ANDROID SDK
+      # =========================================================
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -124,6 +201,12 @@ jobs:
             "platforms;android-36" \
             "build-tools;36.0.0"
 
+          echo "Android SDK installed"
+
+      # =========================================================
+      # GRADLE
+      # =========================================================
+
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v6
         with:
@@ -134,6 +217,10 @@ jobs:
         run: |
           gradle --version
 
+      # =========================================================
+      # BUILD
+      # =========================================================
+
       - name: Build AURIX APK
         shell: bash
         run: |
@@ -141,16 +228,26 @@ jobs:
 
           cd "$ANDROID_DIR"
 
+          echo "======================================"
+          echo "BUILDING AURIX APK"
+          echo "======================================"
+
           gradle \
             --no-daemon \
             --stacktrace \
             clean \
             assembleDebug
 
+      # =========================================================
+      # FIND APK
+      # =========================================================
+
       - name: Find APK
         shell: bash
         run: |
           set -e
+
+          echo "Searching for APK..."
 
           APK=$(find \
             "$ANDROID_DIR/app/build/outputs/apk" \
@@ -160,7 +257,16 @@ jobs:
 
           if [ -z "$APK" ]; then
             echo "ERROR: APK was not created."
-            find "$ANDROID_DIR/app/build/outputs" -type f 2>/dev/null || true
+
+            echo ""
+            echo "Available build files:"
+            find \
+              "$ANDROID_DIR/app/build" \
+              -type f \
+              2>/dev/null \
+              | sort \
+              | head -300
+
             exit 1
           fi
 
@@ -168,7 +274,16 @@ jobs:
           ls -lh "$APK"
 
           mkdir -p output
+
           cp "$APK" output/AURIX.apk
+
+          echo ""
+          echo "Copied APK:"
+          ls -lh output/AURIX.apk
+
+      # =========================================================
+      # VERIFY APK
+      # =========================================================
 
       - name: Verify APK
         shell: bash
@@ -177,15 +292,22 @@ jobs:
 
           test -s output/AURIX.apk
 
+          echo "Verifying APK..."
+
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" \
             verify \
             output/AURIX.apk
 
+          echo ""
           echo "======================================"
           echo "AURIX APK READY"
           echo "======================================"
 
           ls -lh output/AURIX.apk
+
+      # =========================================================
+      # UPLOAD ARTIFACT
+      # =========================================================
 
       - name: Upload AURIX APK
         uses: actions/upload-artifact@v4
